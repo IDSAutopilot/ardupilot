@@ -637,6 +637,27 @@ private:
     // a smoothed airspeed estimate, used for limiting roll angle
     float smoothed_airspeed;
 
+    // used for custom parachute sequence of acpl
+    bool para_seq_initiated = false;
+    bool engine_idle_initiated = false;
+    bool para_deployed = false;
+    bool engine_killed = false;
+
+    // temporary variable to store loiter location for engine kill and parachute deployment
+    Location target_loc_para {};
+
+    // temporary variable to stire target heading for engine kill and para deployment
+    int32_t target_heading_para;
+
+    // target airspeed for engine kill
+    int32_t eng_kill_target_airspeed;
+
+    // timestamp at which acpl engine kill initiated
+    uint32_t t_engkill_init;
+
+    // timestamp at which acpl para deployment initiated
+    uint32_t t_para_init;
+
     // Mission library
     AP_Mission mission{
             FUNCTOR_BIND_MEMBER(&Plane::start_command_callback, bool, const AP_Mission::Mission_Command &),

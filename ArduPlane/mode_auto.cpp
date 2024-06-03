@@ -65,9 +65,57 @@ void ModeAuto::update()
     if (plane.mission.state() != AP_Mission::MISSION_RUNNING) {
         // this could happen if AP_Landing::restart_landing_sequence() returns false which would only happen if:
         // restart_landing_sequence() is called when not executing a NAV_LAND or there is no previous nav point
-        plane.set_mode(plane.mode_rtl, ModeReason::MISSION_END);
-        gcs().send_text(MAV_SEVERITY_INFO, "Aircraft in auto without a running mission");
-        return;
+        // plane.set_mode(plane.mode_rtl, ModeReason::MISSION_END);
+        // gcs().send_text(MAV_SEVERITY_INFO, "Aircraft in auto without a running mission");
+        // run parachute deployment sequence
+        // return;
+        if(!plane.para_seq_initiated)
+        {
+          plane.para_seq_initiated = true;
+          plane.target_loc_para = plane.next_WP_loc;
+          // target heading
+          plane.target_heading_para = plane.prev_WP_loc.get_bearing_to(plane.next_WP_loc)/100;
+//          hal.console->printf("Lat: %d, Lon: %d \n", plane.target_loc_para.lat, plane.target_loc_para.lng);
+          int32_t alt_target, engkill_alt_min, engkill_alt_max;
+          engkill_alt_min = plane.g2.engkill_alt_min * 100;
+          engkill_alt_max = plane.g2.engkill_alt_max * 100;
+          alt_target = (engkill_alt_min + engkill_alt_max) / 2;
+          plane.target_loc_para.set_alt_cm(alt_target, Location::AltFrame::ABOVE_HOME);
+          plane.eng_kill_target_airspeed = (plane.g2.engkill_airspd_min * 100 + plane.g2.engkill_airspd_max * 100) / 2;
+          plane.new_airspeed_cm = plane.eng_kill_target_airspeed;
+          plane.set_next_WP(plane.target_loc_para);
+        }
+        uint16_t radius = abs(plane.g.rtl_radius);
+        if (radius > 0) {
+            plane.loiter.direction = (plane.g.rtl_radius < 0) ? -1 : 1;
+        }
+
+        plane.update_loiter(radius);
+
+        // Check Engine Kill Condition
+        int32_t alt_curr_int;
+        int32_t curr_heading = (plane.ahrs.yaw_sensor / 100) % 360;
+        if (plane.current_loc.get_alt_cm(Location::AltFrame::ABOVE_HOME, alt_curr_int))
+        {
+          float alt_curr = alt_curr_int / 100.f;
+          if (plane.smoothed_airspeed < plane.g2.engkill_airspd_max &&
+              plane.smoothed_airspeed > plane.g2.engkill_airspd_min &&
+              alt_curr < plane.g2.engkill_alt_max && alt_curr > plane.g2.engkill_alt_min &&
+              curr_heading > plane.target_heading_para - plane.g2.engkill_heading_tolerance &&
+              curr_heading < plane.target_heading_para + plane.g2.engkill_heading_tolerance)
+          {
+            plane.set_mode(plane.mode_fbwa, ModeReason::MISSION_END);
+//            hal.console->printf("Airspeed %f, Altitude %f Engine Kill Initiated \n", plane.smoothed_airspeed, alt_curr);
+            plane.gcs().send_text(MAV_SEVERITY_WARNING,
+                                  "Airspeed %f, Altitude %f, Heading %d, Engine Idle Initiated \n",
+                                  plane.smoothed_airspeed, alt_curr, static_cast<int16_t>(curr_heading));
+            // Engine kill commands will be sent in FBWA since wings have to be leveled
+            plane.t_engkill_init = AP_HAL::millis();
+            plane.gcs().send_text(MAV_SEVERITY_WARNING, "Levelling Wings First \n");
+            plane.engine_idle_initiated = true;
+            return;
+          }
+        }
     }
 
     uint16_t nav_cmd_id = plane.mission.get_current_nav_cmd().id;

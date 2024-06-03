@@ -36,6 +36,7 @@
 #include <AP_Mission/AP_Mission.h>
 #include <AP_SerialManager/AP_SerialManager.h>
 #include <stdio.h>
+#include <GCS_MAVLink/GCS.h>
 
 #define PROT_BINARY   0x80
 #define PROT_ID_GAM   0x8D
@@ -67,13 +68,25 @@ void AP_Hott_Telem::init()
 {
     const AP_SerialManager &serial_manager = AP::serialmanager();
 
-    uart = serial_manager.find_serial(AP_SerialManager::SerialProtocol_Hott, 0);
-    if (uart) {
+    uart_1 = serial_manager.find_serial(AP_SerialManager::SerialProtocol_Hott, 0);
+    serial_no_1 = serial_manager.find_portnum(AP_SerialManager::SerialProtocol_Hott, 0);
+    if (uart_1) {
         // register thread
-        if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_Hott_Telem::loop, void),
+        if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_Hott_Telem::loop_1, void),
                                           "Hott",
                                           1024, AP_HAL::Scheduler::PRIORITY_BOOST, 1)) {
-            DEV_PRINTF("Failed to create Hott thread\n");
+            DEV_PRINTF("Failed to create Hott thread on first port\n");
+        }
+    }
+
+    uart_2 = serial_manager.find_serial(AP_SerialManager::SerialProtocol_Hott, 1);
+    serial_no_2 = serial_manager.find_portnum(AP_SerialManager::SerialProtocol_Hott, 1);
+    if (uart_2) {
+        // register thread
+        if (!hal.scheduler->thread_create(FUNCTOR_BIND_MEMBER(&AP_Hott_Telem::loop_2, void),
+                                          "Hott",
+                                          1024, AP_HAL::Scheduler::PRIORITY_BOOST, 1)) {
+            DEV_PRINTF("Failed to create Hott thread on second port\n");
         }
     }
 }
@@ -383,7 +396,7 @@ void AP_Hott_Telem::send_packet(const uint8_t *b, uint8_t len)
     uint8_t crc = 0;
     while (len) {
         uint8_t ob = *b;
-        if (uart->write(ob) == 1) {
+        if (uart_1->write(ob) == 1) {
             len--;
             crc += ob;
             b++;
@@ -392,53 +405,123 @@ void AP_Hott_Telem::send_packet(const uint8_t *b, uint8_t len)
             hal.scheduler->delay_microseconds(100);
         }
     }
-    uart->write(crc);
+    uart_1->write(crc);
 
     // discard any bytes received during the send
     hal.scheduler->delay_microseconds(BYTE_DELAY_US*2);
-    while (uart->available() != 0) {
-        uart->read();
+    while (uart_1->available() != 0) {
+        uart_1->read();
         hal.scheduler->delay_microseconds(100);
     }
 }
 
+///*
+//  thread to process requests
+// */
+//void AP_Hott_Telem::loop(void)
+//{
+//    uart->begin(19200, 10, 10);
+//    uart->set_unbuffered_writes(true);
+//    uart->set_blocking_writes(true);
+
+//    while (true) {
+//        hal.scheduler->delay_microseconds(1500);
+//        uint32_t n = uart->available();
+//        if (n < 2) {
+//            // wait for 2 bytes
+//            continue;
+//        }
+//        if (n > 2) {
+//            uart->discard_input();
+//            continue;
+//        }
+
+//        const uint8_t prot_type = uart->read();
+//        const uint8_t sensor_id = uart->read();
+//        if (prot_type != PROT_BINARY) {
+//            // only do binary protocol for now
+//            continue;
+//        }
+
+//        switch (sensor_id) {
+//        case PROT_ID_EAM:
+//            send_EAM();
+//            break;
+//        case PROT_ID_GPS:
+//            send_GPS();
+//            break;
+//        case PROT_ID_VARIO:
+//            send_Vario();
+//            break;
+//        }
+//    }
+//}
+
 /*
   thread to process requests
  */
-void AP_Hott_Telem::loop(void)
+void AP_Hott_Telem::loop_1(void)
 {
-    uart->begin(19200, 10, 10);
-    uart->set_unbuffered_writes(true);
+    uart_1->begin(19200, 10, 10);
+    uart_1->set_unbuffered_writes(true);
+    
+    uint16_t tmpraw, rpmdisp;
+    char stastring[15];
+    uint32_t time_sent = AP_HAL::millis();
 
     while (true) {
         hal.scheduler->delay_microseconds(1500);
-        uint32_t n = uart->available();
-        if (n < 2) {
-            // wait for 2 bytes
-            continue;
+        uint8_t val = uart_1->read();
+        if(val == 82)
+        {
+          for(int i=0; i<80; i++)
+          {
+            engine_data_1[i] = uart_1->read();
+          }
+          tmpraw = ((uint16_t)(engine_data_1[10]) << 8 | engine_data_1[9]);
+          rpmdisp = ((uint16_t)(engine_data_1[12]) << 8 | engine_data_1[11]);
+          for (int i=0; i<15; i++)
+          {
+            stastring[i] = engine_data_1[27 + i];
+          }
+          if ((AP_HAL::millis() - time_sent) > 1000)
+          {
+            time_sent = AP_HAL::millis();
+            gcs().send_text(MAV_SEVERITY_INFO, "ENG %d: Temp %d, RPM %d, STA %s", serial_no_1, tmpraw, rpmdisp, stastring);
+          }
         }
-        if (n > 2) {
-            uart->discard_input();
-            continue;
-        }
+    }
+}
 
-        const uint8_t prot_type = uart->read();
-        const uint8_t sensor_id = uart->read();
-        if (prot_type != PROT_BINARY) {
-            // only do binary protocol for now
-            continue;
-        }
+void AP_Hott_Telem::loop_2(void)
+{
+    uart_2->begin(19200, 10, 10);
+    uart_2->set_unbuffered_writes(true);
+    
+    uint16_t tmpraw, rpmdisp;
+    char stastring[15];
+    uint32_t time_sent = AP_HAL::millis();
 
-        switch (sensor_id) {
-        case PROT_ID_EAM:
-            send_EAM();
-            break;
-        case PROT_ID_GPS:
-            send_GPS();
-            break;
-        case PROT_ID_VARIO:
-            send_Vario();
-            break;
+    while (true) {
+        hal.scheduler->delay_microseconds(1500);
+        uint8_t val = uart_2->read();
+        if(val == 82)
+        {
+          for(int i=0; i<80; i++)
+          {
+            engine_data_2[i] = uart_2->read();
+          }
+          tmpraw = ((uint16_t)(engine_data_2[10]) << 8 | engine_data_2[9]);
+          rpmdisp = ((uint16_t)(engine_data_2[12]) << 8 | engine_data_2[11]);
+          for (int i=0; i<15; i++)
+          {
+            stastring[i] = engine_data_2[27 + i];
+          }
+          if ((AP_HAL::millis() - time_sent) > 1000)
+          {
+            time_sent = AP_HAL::millis();
+            gcs().send_text(MAV_SEVERITY_INFO, "ENG %d: Temp %d, RPM %d, STA %s", serial_no_2, tmpraw, rpmdisp, stastring);
+          }
         }
     }
 }

@@ -3,6 +3,95 @@
 
 void ModeFBWA::update()
 {
+    // check if parachute has to be triggered
+    if(plane.para_seq_initiated && plane.engine_idle_initiated)
+    {
+      int32_t alt_curr_int;
+      uint32_t tnow = AP_HAL::millis();
+      uint32_t t_elapsed = tnow - plane.t_engkill_init;
+      if (t_elapsed < 3000)
+      {
+        RC_Channels::set_override(2, 1100, tnow); // channel 3 index is 2
+        plane.t_para_init = tnow;
+      }
+      else if(t_elapsed > 3000)
+      {
+        if (plane.current_loc.get_alt_cm(Location::AltFrame::ABOVE_HOME, alt_curr_int))
+        {
+          // check airspeed and altitude conditions
+          float alt_curr = alt_curr_int / 100.f;
+          if (plane.smoothed_airspeed < plane.g2.para_airspd_max &&
+              plane.smoothed_airspeed > plane.g2.para_airspd_min && alt_curr < plane.g2.para_alt_max &&
+              alt_curr > plane.g2.para_alt_min)
+          {
+            uint32_t t_elapsed_para = tnow - plane.t_para_init;
+            // set para channel low
+            if (t_elapsed_para < 1000)
+            {
+              if (!plane.para_deployed)
+              {
+                plane.gcs().send_text(MAV_SEVERITY_WARNING, "Airspeed %f, Altitude %f Parachute Deployed \n",
+                                      plane.smoothed_airspeed, alt_curr);
+//              hal.console->printf("Airspeed %f, Altitude %f Parachute Deployed \n", plane.smoothed_airspeed,
+//              alt_curr);
+                plane.para_deployed = true;
+              }
+              uint8_t para_channel = plane.g2.para_channel - 1;
+              RC_Channels::set_override(para_channel, plane.g2.para_deploy_pwm, tnow);
+              RC_Channels::set_override(2, 1100, tnow);
+            }
+            else if(t_elapsed_para >= 1000 && t_elapsed_para < 3000)
+            {
+              RC_Channels::set_override(2, plane.g2.engkill_pwm, tnow);
+              if(!plane.engine_killed)
+              {
+                plane.gcs().send_text(MAV_SEVERITY_WARNING, "Engine Killed \n");
+                plane.engine_killed = true;
+              }
+            }
+            else
+            {
+              plane.para_seq_initiated = false;
+              plane.para_deployed = false;
+              plane.engine_killed = false;
+              plane.engine_idle_initiated = false;
+            }
+          }
+          else if (plane.para_deployed)
+          {
+            uint32_t t_elapsed_para = tnow - plane.t_para_init;
+            // set para channel low
+            if (t_elapsed_para < 1000)
+            {
+              uint8_t para_channel = plane.g2.para_channel - 1;
+              RC_Channels::set_override(para_channel, plane.g2.para_deploy_pwm, tnow);
+              RC_Channels::set_override(2, 1100, tnow);
+            }
+            else if(t_elapsed_para >= 1000 && t_elapsed_para < 3000)
+            {
+              RC_Channels::set_override(2, plane.g2.engkill_pwm, tnow);
+              if(!plane.engine_killed)
+              {
+                plane.gcs().send_text(MAV_SEVERITY_WARNING, "Engine  Killed \n");
+                plane.engine_killed = true;
+              }
+            }
+            else
+            {
+              plane.para_seq_initiated = false;
+              plane.para_deployed = false;
+              plane.engine_killed = false;
+              plane.engine_idle_initiated = false;
+            }
+          }
+          else
+          {
+            plane.t_para_init = tnow;
+            RC_Channels::set_override(2, 1100, tnow);
+          }
+        }
+      }
+    }
     // set nav_roll and nav_pitch using sticks
     plane.nav_roll_cd  = plane.channel_roll->norm_input() * plane.roll_limit_cd;
     plane.update_load_factor();
